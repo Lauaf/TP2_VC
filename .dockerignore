@@ -1,0 +1,8 @@
+.git
+.venv
+__pycache__
+output
+models
+data/dataset
+runs
+*.ipynb

@@ -1,0 +1,49 @@
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./.env.docker.example:/app/.env
+      - ./src:/app
+      - ./models:/app/models
+      - ./output:/app/output
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["uvicorn", "app.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+  postgres:
+    image: pgvector/pgvector:pg17
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dogs}
+      POSTGRES_USER: ${POSTGRES_USER:-dogs_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dogs_pass}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-dogs_user}", "-d", "${POSTGRES_DB:-dogs}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
