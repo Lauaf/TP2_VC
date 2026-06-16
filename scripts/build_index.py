@@ -19,21 +19,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-# Usa la misma configuracion que el backend local (src/.env, con paths relativos a src/).
-# Si src/.env no existe, se usan los defaults con paths relativos a la raiz del repo.
 os.chdir(SRC if (SRC / ".env").is_file() else ROOT)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--split", default="train", help="Subcarpeta del dataset a indexar (train/valid/test)."
-    )
-    parser.add_argument(
-        "--limit", type=int, default=0, help="Maximo de imagenes por raza (0 = todas)."
-    )
+    parser.add_argument("--split", default="train", help="Subcarpeta del dataset a indexar (train/valid/test).")
+    parser.add_argument("--limit", type=int, default=0, help="Maximo de imagenes por raza (0 = todas).")
     args = parser.parse_args()
 
     from lib.bootstrap import build_classifier, build_similarity, build_store
@@ -50,29 +43,40 @@ def main() -> None:
         extractor = classifier.extract_custom_embedding
     similarity.extract_embedding = extractor  # type: ignore[method-assign]
 
-    root = settings.dataset_path / args.split
+    root = ROOT / "data" / "dataset" / args.split
     if not root.is_dir():
         sys.exit(f"No existe {root}. Descarga el dataset con scripts/download_dataset.py")
+
+    print("Consultando la base de datos para evitar duplicados...")
+    existentes = store.all()
+    paths_indexados = {record.path for record in existentes}
+    print(f"Se encontraron {len(paths_indexados)} imagenes ya cargadas en la base.")
 
     total = 0
     for breed_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         count = 0
+        saltadas = 0
         for image_path in sorted(breed_dir.iterdir()):
             if image_path.suffix.lower() not in IMAGE_SUFFIXES:
                 continue
-            if args.limit and count >= args.limit:
+            if args.limit and (count + saltadas) >= args.limit:
                 break
+            current_path = str(image_path)
+            
+            if current_path in paths_indexados:
+                saltadas += 1
+                continue
+
             similarity.index_image(
-                str(image_path),
+                current_path,
                 breed_dir.name,
                 {"split": args.split, "model": settings.embedding_model},
             )
             count += 1
             total += 1
-        print(f"{breed_dir.name}: {count} imagenes indexadas")
+        print(f"{breed_dir.name}: {count} nuevas indexadas (Omitidas: {saltadas})")
 
-    print(f"Total: {total} embeddings almacenados (modelo: {settings.embedding_model})")
-
+    print(f"Total: {total} embeddings NUEVOS almacenados (modelo: {settings.embedding_model})")
 
 if __name__ == "__main__":
     main()

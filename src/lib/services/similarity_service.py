@@ -96,6 +96,7 @@ class SimilarityService:
         descendente.
         """
         query = list(embedding)
+        query_pgvector = "[" + ",".join(str(x) for x in embedding) + "]"
         k = max(int(top_k), 1)
 
         can_use_store_search = (
@@ -104,18 +105,24 @@ class SimilarityService:
             and self.similarity_metric.lower() != "l2"
         )
         if can_use_store_search:
-            records = list(getattr(self.store, "search")(query, k))
+            records = list(getattr(self.store, "search")(query_pgvector, k))
         else:
             records = self.store.all()
 
-        neighbors = [
-            Neighbor(
-                path=record.path,
-                breed=record.breed,
-                score=float(self.similarity(query, record.embedding)),
+        neighbors = []
+        for record in records:
+            fixed_path = record.path.replace("\\", "/")
+            if "data/dataset" in fixed_path:
+                fixed_path = "/app/data/dataset" + fixed_path.split("data/dataset")[-1]
+                
+            neighbors.append(
+                Neighbor(
+                    path=fixed_path,
+                    breed=record.breed,
+                    score=float(self.similarity(query, record.embedding)),
+                )
             )
-            for record in records
-        ]
+
         neighbors.sort(key=lambda item: item.score, reverse=True)
         return neighbors[:k]
 
