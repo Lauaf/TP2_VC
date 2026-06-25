@@ -111,17 +111,44 @@ class PgVectorEmbeddingStore:
                 ),
             )
 
-    def search(self, query: list[float], k: int = 10) -> list[EmbeddingRecord]:
-        """Top-k vecinos por distancia coseno (operador <=> de pgvector)."""
+    def _search_rows(
+        self,
+        query: list[float],
+        k: int,
+        where_clause: str = "",
+        params: tuple[object, ...] = (),
+    ) -> list[tuple]:
+        sql = f"""
+            SELECT id_imagen, embedding, path, breed, metadata
+            FROM embeddings
+            {where_clause}
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+        """
         with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id_imagen, embedding, path, breed, metadata
-                FROM embeddings
-                ORDER BY embedding <=> %s
-                LIMIT %s
-                """,
-                (query, k),
+            cur.execute(sql, (*params, query, k))
+            return cur.fetchall()
+
+    def search(
+        self,
+        query: list[float],
+        k: int = 10,
+        model_name: str | None = None,
+    ) -> list[EmbeddingRecord]:
+        """Top-k vecinos por distancia coseno (operador <=> de pgvector)."""
+        if model_name:
+            rows = self._search_rows(
+                query,
+                k,
+                "WHERE metadata ->> 'model' = %s",
+                (model_name,),
             )
-            rows = cur.fetchall()
+            if not rows:
+                rows = self._search_rows(
+                    query,
+                    k,
+                    "WHERE NOT (metadata ? 'model')",
+                )
+        else:
+            rows = self._search_rows(query, k)
         return [self._row_to_record(row) for row in rows]

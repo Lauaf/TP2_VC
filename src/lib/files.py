@@ -25,13 +25,28 @@ def safe_file_under(root: Path, relpath: str) -> Path:
 def file_to_public_url(path: Path, roots: Iterable[tuple[Path, str]]) -> str | None:
     """Mapea un path local a una URL publica si cae bajo alguno de los roots servidos."""
     try:
-        p = Path(path).resolve()
+        raw = Path(path)
     except OSError:
         return None
     for base, prefix in roots:
+        base_path = Path(base).resolve()
+        candidates: list[Path] = []
         try:
-            rel = p.relative_to(Path(base).resolve())
-            return f"{prefix}/{rel.as_posix()}"
-        except ValueError:
+            if raw.is_absolute():
+                candidates.append(raw.resolve())
+            else:
+                rel = Path(str(path).replace("\\", "/"))
+                candidates.append((base_path / rel).resolve())
+                if rel.parts and rel.parts[0] == base_path.name:
+                    candidates.append((base_path.parent / rel).resolve())
+        except OSError:
             continue
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                relpath = candidate.relative_to(base_path)
+                return f"{prefix}/{relpath.as_posix()}"
+            except ValueError:
+                continue
     return None

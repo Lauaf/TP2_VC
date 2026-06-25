@@ -14,5 +14,6 @@ models/*
 *.engine
 data/dataset/*
 !data/dataset/.gitkeep
+data/embeddings_*.json
 runs/
 .DS_Store

@@ -84,7 +84,12 @@ class SimilarityService:
             embedding /= norm
         return embedding.tolist()
 
-    def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
+    def search_similar_images(
+        self,
+        embedding: list[float],
+        top_k: int,
+        model_name: Optional[str] = None,
+    ) -> list[Neighbor]:
         """
         Recupera de la base vectorial las top_k imagenes mas similares.
 
@@ -96,28 +101,27 @@ class SimilarityService:
         descendente.
         """
         query = list(embedding)
-        query_pgvector = "[" + ",".join(str(x) for x in embedding) + "]"
         k = max(int(top_k), 1)
-
+        target_model = model_name or self.model_name
         can_use_store_search = (
             hasattr(self.store, "search")
             and callable(getattr(self.store, "search"))
             and self.similarity_metric.lower() != "l2"
         )
         if can_use_store_search:
-            records = list(getattr(self.store, "search")(query_pgvector, k))
+            search_fn = getattr(self.store, "search")
+            try:
+                records = list(search_fn(query, k, target_model))
+            except TypeError:
+                records = list(search_fn(query, k))
         else:
-            records = self.store.all()
+            records = self._records_for_model(target_model)
 
         neighbors = []
         for record in records:
-            fixed_path = record.path.replace("\\", "/")
-            if "data/dataset" in fixed_path:
-                fixed_path = "/app/data/dataset" + fixed_path.split("data/dataset")[-1]
-                
             neighbors.append(
                 Neighbor(
-                    path=fixed_path,
+                    path=record.path,
                     breed=record.breed,
                     score=float(self.similarity(query, record.embedding)),
                 )
@@ -125,6 +129,28 @@ class SimilarityService:
 
         neighbors.sort(key=lambda item: item.score, reverse=True)
         return neighbors[:k]
+
+    def _records_for_model(self, model_name: str) -> list[EmbeddingRecord]:
+        records = list(self.store.all())
+        matching_records = [
+            record
+            for record in records
+            if str(record.metadata.get("model", "")).strip() == model_name
+        ]
+        if matching_records:
+            return matching_records
+
+        legacy_records = [record for record in records if "model" not in record.metadata]
+        if legacy_records:
+            logger.warning(
+                "No indexed records tagged with model '%s'; using %d legacy records without model metadata.",
+                model_name,
+                len(legacy_records),
+            )
+            return legacy_records
+
+        logger.warning("No indexed records found for embedding model '%s'.", model_name)
+        return []
 
     def predict_breed_from_neighbors(self, results: list[Neighbor]) -> tuple[str, float]:
         """
@@ -261,13 +287,17 @@ class SimilarityService:
         embedding = extractor(image)
 
         k = int(top_k) if top_k else self.top_k
-        neighbors = [self._with_url(n) for n in self.search_similar_images(embedding, k)]
+        effective_model_name = model_name or self.model_name
+        neighbors = [
+            self._with_url(n)
+            for n in self.search_similar_images(embedding, k, effective_model_name)
+        ]
         breed, score = self.predict_breed_from_neighbors(neighbors)
         logger.info("Predicted breed: %s (score=%.4f) for %s", breed, score, source_path)
 
         payload = SearchResult(
             source_path=source_path,
-            model=model_name or self.model_name,
+            model=effective_model_name,
             predicted_breed=breed,
             score=round(float(score), 4),
             neighbors=neighbors,

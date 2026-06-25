@@ -13,9 +13,8 @@ import cv2
 import numpy as np
 import onnxruntime
 import torch
-from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, models, transforms
 from torchvision.models import ResNet18_Weights
 
@@ -188,6 +187,15 @@ class ClassifierService:
         learning_rate = self._default_learning_rate()
         weight_decay = self._env_float("TRAIN_WEIGHT_DECAY", 1e-4)
         num_workers = self._env_int("TRAIN_NUM_WORKERS", 0)
+        hyperparameters = {
+            "batch_size": batch_size,
+            "epochs": epochs,
+            "learning_rate": learning_rate,
+            "weight_decay": weight_decay,
+            "num_workers": num_workers,
+            "image_size": self.image_size,
+            "device": device.type,
+        }
 
         train_loader = DataLoader(
             train_dataset,
@@ -282,7 +290,19 @@ class ClassifierService:
 
         self.output_path.mkdir(parents=True, exist_ok=True)
         history_path = self.output_path / f"{self.active_model_name}_history.json"
-        history_path.write_text(json.dumps(history, ensure_ascii=True, indent=2), encoding="utf-8")
+        training_summary = {
+            "model": self.active_model_name,
+            "checkpoint": str(self.active_checkpoint),
+            "class_names": list(train_dataset.classes),
+            "dataset_sizes": {
+                "train": len(train_dataset),
+                "valid": len(valid_dataset),
+            },
+            "hyperparameters": hyperparameters,
+            "best_val_accuracy": float(best_val_accuracy),
+            "history": history,
+        }
+        history_path.write_text(json.dumps(training_summary, ensure_ascii=True, indent=2), encoding="utf-8")
 
         self._loaded.pop(self.active_model_name, None)
         if hasattr(self, "_torch_bundles"):
@@ -300,6 +320,8 @@ class ClassifierService:
           {"accuracy": 0.91, "precision": 0.90, "recall": 0.89,
            "specificity": 0.99, "f1": 0.90}
         """
+        from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
+
         test_dataset = self._build_dataset("test", train=False)
         batch_size = self._env_int("EVAL_BATCH_SIZE", self._env_int("TRAIN_BATCH_SIZE", 32))
         num_workers = self._env_int("TRAIN_NUM_WORKERS", 0)
@@ -318,11 +340,35 @@ class ClassifierService:
 
         y_true: list[int] = []
         y_pred: list[int] = []
+        prediction_rows: list[dict[str, Any]] = []
+        sample_paths = [str(path) for path, _ in test_dataset.samples]
+        sample_offset = 0
         for inputs, labels in loader:
             logits = self._predict_logits(inputs)
-            predictions = torch.argmax(logits, dim=1).cpu().numpy().tolist()
-            y_true.extend(labels.numpy().tolist())
+            probabilities = torch.softmax(logits, dim=1)
+            scores, predicted_indexes = torch.max(probabilities, dim=1)
+            predictions = predicted_indexes.cpu().numpy().tolist()
+            labels_list = labels.numpy().tolist()
+            y_true.extend(labels_list)
             y_pred.extend(predictions)
+            batch_paths = sample_paths[sample_offset : sample_offset + len(labels_list)]
+            for source_path, true_idx, pred_idx, score in zip(
+                batch_paths,
+                labels_list,
+                predictions,
+                scores.cpu().numpy().tolist(),
+                strict=False,
+            ):
+                prediction_rows.append(
+                    {
+                        "path": source_path,
+                        "true_breed": class_names[true_idx],
+                        "predicted_breed": class_names[pred_idx],
+                        "score": round(float(score), 6),
+                        "correct": bool(true_idx == pred_idx),
+                    }
+                )
+            sample_offset += len(labels_list)
 
         labels_idx = list(range(len(class_names)))
         matrix = confusion_matrix(y_true, y_pred, labels=labels_idx)
@@ -334,15 +380,34 @@ class ClassifierService:
             average="macro",
             zero_division=0,
         )
+        per_class_precision, per_class_recall, per_class_f1, support = precision_recall_fscore_support(
+            y_true,
+            y_pred,
+            labels=labels_idx,
+            average=None,
+            zero_division=0,
+        )
 
         total = int(np.sum(matrix))
         specificities: list[float] = []
+        per_class_metrics: list[dict[str, float | int | str]] = []
         for idx in labels_idx:
             tp = int(matrix[idx, idx])
             fp = int(matrix[:, idx].sum() - tp)
             fn = int(matrix[idx, :].sum() - tp)
             tn = total - tp - fp - fn
-            specificities.append(float(specificity_score(tn, fp)))
+            class_specificity = float(specificity_score(tn, fp))
+            specificities.append(class_specificity)
+            per_class_metrics.append(
+                {
+                    "breed": class_names[idx],
+                    "precision": round(float(per_class_precision[idx]), 4),
+                    "recall": round(float(per_class_recall[idx]), 4),
+                    "specificity": round(class_specificity, 4),
+                    "f1": round(float(per_class_f1[idx]), 4),
+                    "support": int(support[idx]),
+                }
+            )
         specificity = float(np.mean(specificities)) if specificities else 0.0
 
         metrics = {
@@ -360,6 +425,8 @@ class ClassifierService:
             "metrics": metrics,
             "class_names": class_names,
             "confusion_matrix": matrix.tolist(),
+            "per_class_metrics": per_class_metrics,
+            "predictions": prediction_rows,
         }
         metrics_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
         return metrics
@@ -567,7 +634,73 @@ class ClassifierService:
                 f"Dataset split not found: {directory}. "
                 "Descarga/descomprime el dataset en data/dataset con las carpetas train/valid/test."
             )
-        return datasets.ImageFolder(directory, transform=self._transform(train=train))
+        dataset = datasets.ImageFolder(directory, transform=self._transform(train=train))
+        self._canonicalize_dataset_labels(dataset, split)
+        return self._maybe_limit_dataset(dataset, split)
+
+    def _canonicalize_dataset_labels(self, dataset: datasets.ImageFolder, split: str) -> None:
+        canonical_classes = self._class_names_from_dataset()
+        canonical_to_idx = {name: idx for idx, name in enumerate(canonical_classes)}
+
+        remapped_samples: list[tuple[str, int]] = []
+        remapped_targets: list[int] = []
+        normalized_changes: dict[str, str] = {}
+        for path, class_idx in dataset.samples:
+            original_name = dataset.classes[class_idx]
+            normalized_name = self._normalize_breed_name(original_name)
+            if normalized_name not in canonical_to_idx:
+                raise ValueError(
+                    f"Split '{split}' contains unknown class '{original_name}' "
+                    f"(normalized as '{normalized_name}')."
+                )
+            remapped_idx = canonical_to_idx[normalized_name]
+            remapped_samples.append((path, remapped_idx))
+            remapped_targets.append(remapped_idx)
+            if normalized_name != original_name:
+                normalized_changes[original_name] = normalized_name
+
+        dataset.classes = canonical_classes
+        dataset.class_to_idx = canonical_to_idx
+        dataset.samples = remapped_samples
+        dataset.targets = remapped_targets
+        if hasattr(dataset, "imgs"):
+            dataset.imgs = remapped_samples
+        if normalized_changes:
+            logger.info("Normalized class names for split '%s': %s", split, normalized_changes)
+
+    def _maybe_limit_dataset(self, dataset: datasets.ImageFolder, split: str) -> datasets.ImageFolder:
+        split_key = split.upper()
+        limit = self._env_int(f"{split_key}_MAX_IMAGES_PER_CLASS", 0)
+        if limit <= 0:
+            limit = self._env_int("DATASET_MAX_IMAGES_PER_CLASS", 0)
+        if limit <= 0:
+            return dataset
+
+        rng = random.Random(self._env_int("TRAIN_SEED", 42))
+        selected_indices: list[int] = []
+        grouped_indices: dict[int, list[int]] = {}
+        for index, class_idx in enumerate(dataset.targets):
+            grouped_indices.setdefault(int(class_idx), []).append(index)
+
+        for class_idx in sorted(grouped_indices):
+            class_indices = list(grouped_indices[class_idx])
+            if len(class_indices) > limit:
+                class_indices = sorted(rng.sample(class_indices, limit))
+            selected_indices.extend(class_indices)
+
+        selected_indices.sort()
+        subset = Subset(dataset, selected_indices)
+        subset.classes = dataset.classes
+        subset.class_to_idx = dataset.class_to_idx
+        subset.samples = [dataset.samples[i] for i in selected_indices]
+        subset.targets = [dataset.targets[i] for i in selected_indices]
+        logger.info(
+            "Limiting split '%s' to %d images per class (%d samples total).",
+            split,
+            limit,
+            len(selected_indices),
+        )
+        return subset
 
     def _transform(self, train: bool) -> transforms.Compose:
         if train:
@@ -632,7 +765,11 @@ class ClassifierService:
                 f"Cannot infer class names because {train_dir} does not exist. "
                 "Descarga el dataset o usa checkpoints con metadata de clases."
             )
-        return sorted(item.name for item in train_dir.iterdir() if item.is_dir())
+        return sorted({self._normalize_breed_name(item.name) for item in train_dir.iterdir() if item.is_dir()})
+
+    @staticmethod
+    def _normalize_breed_name(name: str) -> str:
+        return " ".join(str(name).split())
 
     def _onnx_class_names(self, checkpoint_path: Path) -> list[str]:
         for candidate in (

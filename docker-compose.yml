@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
     container_name: backend
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./.env.docker.example:/app/.env
       - ./src:/app
@@ -20,7 +20,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT_HOST:-5432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-dogs}
       POSTGRES_USER: ${POSTGRES_USER:-dogs_user}
@@ -39,9 +39,9 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: frontend
     environment:
-      BACKEND_URL: http://backend:8000
+      BACKEND_URL: ${FRONTEND_BACKEND_URL:-http://backend:8000}
     ports:
-      - "8080:8080"
+      - "${FRONTEND_PORT:-8080}:8080"
     depends_on:
       - backend
 
