@@ -16,7 +16,7 @@ Sistema de reconocimiento de razas de perros en tres etapas:
 
 | Modelo | Accuracy | Precision | Recall | Specificity | F1 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ResNet18 fine-tuned | 0.9429 | 0.9486 | 0.9429 | 0.9992 | 0.9432 |
+| ResNet18 fine-tuned | 0.9157 | 0.9281 | 0.9157 | 0.9988 | 0.9127 |
 | CNN custom | 0.5043 | 0.5177 | 0.5043 | 0.9928 | 0.4800 |
 
 ### Similitud (valid, `limit_per_class=3`, `top_k=10`)
@@ -31,55 +31,92 @@ Sistema de reconocimiento de razas de perros en tres etapas:
 
 ## Requisitos
 
-- Python 3.12
 - Docker Desktop
 - Dataset de Kaggle: [`gpiosenka/70-dog-breedsimage-data-set`](https://www.kaggle.com/datasets/gpiosenka/70-dog-breedsimage-data-set)
 
 ---
 
-## Inicio rápido con Docker
+## Setup inicial
 
-El modo por defecto usa `USE_PGVECTOR=false` y un índice JSON de demo (`data/embeddings.json`) para que la app levante sin reindexar PostgreSQL.
+### 1. Descargar el dataset
+
+Descargarlo desde Kaggle y copiar las carpetas `train/`, `valid/` y `test/` dentro de `data/dataset/`:
+
+```
+data/
+└── dataset/
+    ├── train/
+    ├── valid/
+    └── test/
+```
+
+### 2. Levantar los servicios
 
 ```bash
 docker compose build
-docker compose up
+docker compose up -d
 ```
 
 | Servicio | URL |
 | --- | --- |
 | Frontend | http://localhost:8080 |
-| Backend | http://localhost:8000 |
+| Backend | http://localhost:8000/docs |
 | PostgreSQL | localhost:5432 |
+
+### 3. Construir el índice de embeddings
+
+La primera vez que se levanta el sistema es necesario indexar el dataset en la base vectorial. Esto solo se hace una vez — los datos persisten en el volumen de PostgreSQL entre reinicios.
+
+```bash
+# Modelo baseline (ResNet18 preentrenado sin fine-tuning)
+docker exec -e PYTHONPATH=/app backend python /scripts/build_index.py
+
+# ResNet18 fine-tuned
+docker exec -e PYTHONPATH=/app -e EMBEDDING_MODEL=resnet18_finetuned backend python /scripts/build_index.py
+
+# CNN custom
+docker exec -e PYTHONPATH=/app -e EMBEDDING_MODEL=cnn_custom backend python /scripts/build_index.py
+```
+
+Cada modelo tarda aproximadamente 10-15 minutos en indexar las ~8000 imágenes del split `train`. El progreso se muestra por consola raza por raza.
+
+Para verificar que el índice quedó completo:
+
+```bash
+docker exec tp2_vc-postgres-1 psql -U dogs_user -d dogs -c \
+  "SELECT COUNT(*), metadata->>'model' as model FROM embeddings GROUP BY model;"
+```
+
+El resultado esperado es 7946 registros por cada modelo.
+
+> **Importante**: usar `docker compose down` para detener los servicios conserva los datos. Usar `docker compose down -v` elimina el volumen de PostgreSQL y requiere reindexar desde cero.
+
+---
+
+## Uso normal (después del setup)
+
+Una vez indexado, el sistema levanta completamente con:
+
+```bash
+docker compose up -d
+```
 
 Si algún puerto está ocupado:
 
 ```bash
 # Linux/Mac
-BACKEND_PORT=18000 FRONTEND_PORT=18080 POSTGRES_PORT_HOST=15432 docker compose up
+BACKEND_PORT=18000 FRONTEND_PORT=18081 POSTGRES_PORT_HOST=15432 docker compose up -d
 
 # PowerShell
-$env:BACKEND_PORT="18000"
-$env:FRONTEND_PORT="18080"
-$env:POSTGRES_PORT_HOST="15432"
-docker compose up
+$env:FRONTEND_PORT="18081"
+docker compose up -d
 ```
 
 ---
 
 ## Desarrollo local
 
-### 1. Descargar el dataset
-
-```python
-import kagglehub
-path = kagglehub.dataset_download("gpiosenka/70-dog-breedsimage-data-set")
-print(path)
-```
-
-Copiar `train/`, `valid/` y `test/` dentro de `data/dataset/`.
-
-### 2. Crear entorno virtual e instalar dependencias
+### 1. Crear entorno virtual e instalar dependencias
 
 ```powershell
 py -3.12 -m venv .venv
@@ -87,13 +124,13 @@ py -3.12 -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 3. Configurar variables de entorno
+### 2. Configurar variables de entorno
 
 ```powershell
 Copy-Item .env.local.example src\.env
 ```
 
-### 4. Levantar backend y frontend
+### 3. Levantar backend y frontend
 
 ```powershell
 # Backend
@@ -115,8 +152,6 @@ Todos se ejecutan desde la raíz del repo.
 $env:EMBEDDING_MODEL="baseline"          # o resnet18_finetuned / cnn_custom
 python scripts/build_index.py --split train
 ```
-
-> Usar `USE_PGVECTOR=true` para indexar en PostgreSQL en vez del JSON.
 
 ### Entrenar clasificadores
 
@@ -165,7 +200,7 @@ TP2_VC/
 ├── data/
 │   ├── dataset/       # Dataset (no versionado)
 │   ├── external/      # Imágenes externas para evaluación
-│   └── embeddings.json  # Índice demo chico
+│   └── embeddings.json  # Índice JSON alternativo (modo sin pgvector)
 ├── models/            # Checkpoints entrenados (no versionados)
 ├── output/            # Resultados y artefactos runtime (no versionados)
 ├── report_assets/     # Plots y resumen del informe (versionado)
@@ -195,7 +230,7 @@ TP2_VC/
 
 Con `data/dataset/valid/Beagle/01.jpg`:
 
-- **Etapa 1**: `predicted_breed = Beagle`, vecinos con URLs `/files/data/...`
+- **Etapa 1**: `predicted_breed = Beagle`, vecinos con scores altos
 - **Etapa 2**: `breed = Beagle` con score alto usando `resnet18_finetuned`
 - **Etapa 3**: al menos una detección y `detected_breeds = ["Beagle"]`
 
