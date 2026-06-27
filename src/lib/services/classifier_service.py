@@ -48,35 +48,60 @@ class CustomCNNClassifier(nn.Module):
     def __init__(self, num_classes: int) -> None:
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
+            # Bloque 1: 64 filtros dobles
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
+            nn.Dropout2d(p=0.05),
+            # Bloque 2: 128 filtros dobles
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
+            nn.Dropout2d(p=0.05),
+            # Bloque 3: 256 filtros dobles
             nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(p=0.1),
+            # Bloque 4: 512 filtros dobles
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((2, 2)),
         )
-        self.embedding = nn.Linear(256, 512)
-        self.dropout = nn.Dropout(p=0.3)
+        self.embedding = nn.Sequential(
+            nn.Linear(512 * 4, 1024),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.4),
+            nn.Linear(1024, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.3),
+        )
         self.classifier = nn.Linear(512, num_classes)
         self.embedding_dim = 512
 
     def forward(self, x: torch.Tensor, return_features: bool = False) -> torch.Tensor:
         x = self.features(x)
         x = torch.flatten(x, 1)
-        features = torch.relu(self.embedding(x))
+        features = self.embedding(x)
         if return_features:
             return features
-        return self.classifier(self.dropout(features))
+        return self.classifier(features)
 
 
 @dataclass
@@ -219,12 +244,21 @@ class ClassifierService:
         ).to(device)
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="max",
-            factor=0.5,
-            patience=max(self._env_int("TRAIN_LR_PATIENCE", 2), 1),
-        )
+        if self.active_model_name == "cnn_custom":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=epochs,
+                eta_min=1e-6,
+            )
+            scheduler_needs_metric = False
+        else:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="max",
+                factor=0.5,
+                patience=max(self._env_int("TRAIN_LR_PATIENCE", 2), 1),
+            )
+            scheduler_needs_metric = True
 
         best_state: dict[str, Any] | None = None
         best_val_accuracy = -1.0
@@ -247,7 +281,10 @@ class ClassifierService:
                 device=device,
                 training=False,
             )
-            scheduler.step(valid_accuracy)
+            if scheduler_needs_metric:
+                scheduler.step(valid_accuracy)
+            else:
+                scheduler.step()
 
             epoch_summary = {
                 "epoch": float(epoch + 1),
@@ -704,6 +741,17 @@ class ClassifierService:
 
     def _transform(self, train: bool) -> transforms.Compose:
         if train:
+            if self.active_model_name == "cnn_custom":
+                return transforms.Compose([
+                    transforms.RandomResizedCrop(self.image_size, scale=(0.65, 1.0)),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.RandomRotation(20),
+                    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.08),
+                    transforms.RandomGrayscale(p=0.05),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                    transforms.RandomErasing(p=0.2, scale=(0.02, 0.15)),
+                ])
             return transforms.Compose(
                 [
                     transforms.Resize((self.image_size, self.image_size)),
@@ -808,12 +856,12 @@ class ClassifierService:
     def _default_learning_rate(self) -> float:
         if self.active_model_name == "resnet18_finetuned":
             return self._env_float("TRAIN_LR", 3e-4)
-        return self._env_float("TRAIN_LR", 1e-3)
+        return self._env_float("TRAIN_LR", 3e-4)
 
     def _default_epochs(self) -> int:
         if self.active_model_name == "resnet18_finetuned":
             return self._env_int("TRAIN_EPOCHS", 6)
-        return self._env_int("TRAIN_EPOCHS", 10)
+        return self._env_int("TRAIN_EPOCHS", 40)
 
     @staticmethod
     def _device() -> torch.device:

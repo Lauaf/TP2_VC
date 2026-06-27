@@ -16,6 +16,30 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _plot_class_distribution() -> None:
+    dataset = ROOT / "data" / "dataset" / "train"
+    counts = sorted(
+        [(d.name, len(list(d.iterdir()))) for d in dataset.iterdir() if d.is_dir()],
+        key=lambda x: x[1],
+    )
+    names = [c[0] for c in counts]
+    values = [c[1] for c in counts]
+    avg = sum(values) / len(values)
+
+    fig, ax = plt.subplots(figsize=(18, 6))
+    ax.bar(names, values, color="steelblue", edgecolor="white", linewidth=0.5)
+    ax.axhline(y=avg, color="red", linestyle="--", linewidth=1.2, label=f"Promedio ({avg:.1f})")
+    ax.set_xlabel("Raza", fontsize=11)
+    ax.set_ylabel("Cantidad de imágenes", fontsize=11)
+    ax.set_title("Distribución de imágenes por raza — split train", fontsize=13)
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels(names, rotation=90, fontsize=7)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(ASSETS / "class_distribution.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _plot_history(resnet_history: dict, cnn_history: dict) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     for payload, label, color in (
@@ -164,6 +188,7 @@ def main() -> None:
     resnet_similarity = _load_json(OUTPUT / "resnet18_finetuned_similarity_metrics.json")
     cnn_similarity = _load_json(OUTPUT / "cnn_custom_similarity_metrics.json")
 
+    _plot_class_distribution()
     _plot_history(resnet_history, cnn_history)
     _plot_classifier_metrics(resnet_metrics, cnn_metrics)
     _plot_similarity_metrics(baseline_similarity, resnet_similarity, cnn_similarity)

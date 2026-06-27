@@ -1,5 +1,6 @@
 .env
 .venv/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -17,3 +18,5 @@ data/dataset/*
 data/embeddings_*.json
 runs/
 .DS_Store
+data/embeddings.json
+data/embeddings_*.json

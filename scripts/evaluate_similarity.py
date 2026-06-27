@@ -11,6 +11,7 @@ import os
 import sys
 from collections import Counter
 from pathlib import Path
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -20,6 +21,24 @@ os.chdir(SRC if (SRC / ".env").is_file() else ROOT)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
+def ndcg_at_k(neighbors: list, true_breed: str, k: int) -> float:
+    """Calcula NDCG@k para una consulta dada.
+    
+    El caso ideal (IDCG) asume que todos los resultados relevantes
+    presentes en el top-k aparecen primero en el ranking.
+    NDCG esta siempre en [0, 1].
+    """
+    top_k = neighbors[:k]
+    gains = [1.0 if (n.breed if hasattr(n, "breed") else n.get("breed")) == true_breed else 0.0 for n in top_k]
+
+    # DCG: suma ponderada por posicion
+    dcg = sum(g / np.log2(i + 2) for i, g in enumerate(gains))
+
+    # IDCG: los `n_relevant` hits primeros en posicion optima
+    n_relevant = int(sum(gains))
+    idcg = sum(1.0 / np.log2(i + 2) for i in range(n_relevant))
+
+    return float(dcg / idcg) if idcg > 0 else 0.0
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -94,6 +113,7 @@ def main() -> None:
             neighbors = similarity.search_similar_images(embedding, args.top_k, args.model)
             predicted_breed, score = similarity.predict_breed_from_neighbors(neighbors)
             is_correct = predicted_breed == breed
+            ndcg = ndcg_at_k(neighbors, breed, k=args.top_k)
             rows.append(
                 {
                     "path": str(image_path),
@@ -101,6 +121,7 @@ def main() -> None:
                     "predicted_breed": predicted_breed,
                     "score": round(float(score), 6),
                     "correct": is_correct,
+                    "ndcg": round(ndcg, 6),
                 }
             )
             total += 1
@@ -115,6 +136,8 @@ def main() -> None:
         for breed, count in sorted(per_class_total.items())
         if count
     }
+    ndcg_scores = [r["ndcg"] for r in rows]
+    mean_ndcg = round(sum(ndcg_scores) / len(ndcg_scores), 4) if ndcg_scores else 0.0
     payload = {
         "model": args.model,
         "split": args.split,
@@ -126,11 +149,12 @@ def main() -> None:
         "accuracy": round(float(accuracy), 4),
         "per_class_accuracy": per_class_accuracy,
         "predictions": rows,
+        "ndcg_at_k": mean_ndcg,
     }
 
     output_path = settings.output_path / f"{args.model}_similarity_metrics.json"
     output_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    print(json.dumps({k: payload[k] for k in ("model", "queries", "correct", "accuracy")}, ensure_ascii=False, indent=2))
+    print(json.dumps({k: payload[k] for k in ("model", "queries", "correct", "accuracy", "ndcg_at_k")}, ensure_ascii=False, indent=2))
     print(f"Detailed results written to: {output_path}")
 
 
