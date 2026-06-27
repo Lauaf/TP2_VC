@@ -11,6 +11,8 @@ import numpy as np
 from lib.schemas import ClassifyResult, DetectResult, DogDetection
 from lib.services.classifier_service import ClassifierService
 
+from ultralytics import YOLO
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,8 +119,7 @@ class DetectionService:
 
     def _yolo_model(self):
         if not hasattr(self, "_loaded_yolo_model"):
-            from ultralytics import YOLO
-
+            
             logger.info("Loading YOLO detector: %s", self.yolo_model_name)
             self._loaded_yolo_model = YOLO(self.yolo_model_name)
         return self._loaded_yolo_model

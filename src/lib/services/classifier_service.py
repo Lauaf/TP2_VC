@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import onnxruntime
 import torch
+from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, models, transforms
@@ -771,8 +772,6 @@ class ClassifierService:
         )
 
     def _preprocess_bgr(self, image: np.ndarray) -> torch.Tensor:
-        from PIL import Image
-
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         pil = Image.fromarray(rgb)
         tensor = self._transform(train=False)(pil).unsqueeze(0)

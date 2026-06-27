@@ -15,6 +15,9 @@ import os
 import sys
 from pathlib import Path
 from uuid import uuid4
+from lib.bootstrap import build_classifier, build_similarity, build_store
+from lib.config import settings
+from lib.schemas import EmbeddingRecord
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -50,10 +53,6 @@ def main() -> None:
     parser.add_argument("--split", default="train", help="Subcarpeta del dataset a indexar (train/valid/test).")
     parser.add_argument("--limit", type=int, default=0, help="Maximo de imagenes por raza (0 = todas).")
     args = parser.parse_args()
-
-    from lib.bootstrap import build_classifier, build_similarity, build_store
-    from lib.config import settings
-    from lib.schemas import EmbeddingRecord
 
     store = build_store(settings)
     similarity = build_similarity(settings, store)

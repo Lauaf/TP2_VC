@@ -8,6 +8,10 @@ from uuid import uuid4
 
 import cv2
 import numpy as np
+import torch
+from PIL import Image
+from torchvision import transforms
+from torchvision.models import ResNet18_Weights, resnet18
 
 from lib.schemas import EmbeddingRecord, Neighbor, SearchResult
 from lib.storage.base import EmbeddingStoreProtocol
@@ -181,10 +185,6 @@ class SimilarityService:
 
     def _baseline_components(self) -> tuple[Any, Any, Any, Any]:
         if not hasattr(self, "_baseline_model"):
-            import torch
-            from torchvision import transforms
-            from torchvision.models import ResNet18_Weights, resnet18
-
             weights = ResNet18_Weights.DEFAULT
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = resnet18(weights=weights)
@@ -217,8 +217,6 @@ class SimilarityService:
 
     @staticmethod
     def _to_pil_rgb(image: np.ndarray):
-        from PIL import Image
-
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         return Image.fromarray(rgb)
 

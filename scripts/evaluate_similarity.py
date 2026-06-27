@@ -12,6 +12,9 @@ import sys
 from collections import Counter
 from pathlib import Path
 import numpy as np
+from lib.bootstrap import build_classifier, build_similarity
+from lib.config import settings
+from lib.storage.embedding_store import EmbeddingStore
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -72,10 +75,6 @@ def main() -> None:
         help="Ruta opcional al store JSON de embeddings. Si se omite usa la configuracion actual.",
     )
     args = parser.parse_args()
-
-    from lib.bootstrap import build_classifier, build_similarity
-    from lib.config import settings
-    from lib.storage.embedding_store import EmbeddingStore
 
     if args.embeddings_path:
         candidate = Path(args.embeddings_path)
